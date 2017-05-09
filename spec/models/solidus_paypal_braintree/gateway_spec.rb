@@ -4,7 +4,7 @@ require 'support/order_ready_for_payment'
 
 RSpec.describe SolidusPaypalBraintree::Gateway do
   let(:gateway) do
-    new_gateway
+    new_gateway.tap(&:save)
   end
 
   let(:braintree) { gateway.braintree }
@@ -15,9 +15,11 @@ RSpec.describe SolidusPaypalBraintree::Gateway do
     SolidusPaypalBraintree::Source.new(
       nonce: 'fake-valid-nonce',
       user: user,
-      payment_type: payment_type
+      payment_type: payment_type,
+      payment_method: gateway
     )
   end
+
   let(:payment_type) { SolidusPaypalBraintree::Source::PAYPAL }
 
   describe "saving preference hashes as strings" do
@@ -114,13 +116,39 @@ RSpec.describe SolidusPaypalBraintree::Gateway do
       braintree.testing.settle(sale_id).transaction.id
     end
 
+    let(:currency) { 'USD' }
+
+    let(:gateway_options) do
+      {
+        currency: currency,
+        shipping_address: {
+          name: "Bruce Wayne",
+          address1: "42 Spruce Lane",
+          address2: "Apt 312",
+          city: "Gotham",
+          state: "CA",
+          zip: "90210",
+          country: "US"
+        },
+        billing_address: {
+          name: "Dick Grayson",
+          address1: "15 Robin Walk",
+          address2: "Apt 123",
+          city: "Blüdhaven",
+          state: "CA",
+          zip: "90210",
+          country: "US"
+        }
+      }
+    end
+
     describe "#method_type" do
       subject { gateway.method_type }
       it { is_expected.to eq "paypal_braintree" }
     end
 
     describe '#purchase', vcr: { cassette_name: 'gateway/purchase' } do
-      subject(:purchase) { gateway.purchase(1000, source, {}) }
+      subject(:purchase) { gateway.purchase(1000, source, gateway_options) }
 
       include_examples "successful response"
 
@@ -131,8 +159,7 @@ RSpec.describe SolidusPaypalBraintree::Gateway do
     end
 
     describe "#authorize" do
-      subject(:authorize) { gateway.authorize(1000, source, { currency: currency }) }
-      let(:currency) { 'USD' }
+      subject(:authorize) { gateway.authorize(1000, source, gateway_options) }
 
       context 'successful authorization', vcr: { cassette_name: 'gateway/authorize' } do
         include_examples "successful response"
@@ -172,6 +199,46 @@ RSpec.describe SolidusPaypalBraintree::Gateway do
                   payee_email: 'paypal+europe@example.com'
                 }
               }
+          })).and_call_original
+          authorize
+        end
+
+        context "PayPal transaction", vcr: { cassette_name: 'gateway/authorize/paypal/address' } do
+          it 'includes the shipping address in the request' do
+            expect_any_instance_of(Braintree::TransactionGateway).
+              to receive(:sale).
+              with(hash_including({
+                shipping: {
+                  first_name: "Bruce",
+                  last_name: "Wayne",
+                  street_address: "42 Spruce Lane Apt 312",
+                  locality: "Gotham",
+                  postal_code: "90210",
+                  region: "CA",
+                  country_code_alpha2: "US"
+                }
+              })).and_call_original
+            authorize
+          end
+        end
+      end
+
+      context "CreditCard transaction", vcr: { cassette_name: 'gateway/authorize/credit_card/address' } do
+        let(:payment_type) { SolidusPaypalBraintree::Source::CREDIT_CARD }
+
+        it 'includes the billing address in the request' do
+          expect_any_instance_of(Braintree::TransactionGateway).
+          to receive(:sale).
+          with(hash_including({
+            billing: {
+              first_name: "Dick",
+              last_name: "Grayson",
+              street_address: "15 Robin Walk Apt 123",
+              locality: "Blüdhaven",
+              postal_code: "90210",
+              region: "CA",
+              country_code_alpha2: "US"
+            }
           })).and_call_original
           authorize
         end
@@ -286,6 +353,106 @@ RSpec.describe SolidusPaypalBraintree::Gateway do
 
         it "does not create a new customer profile" do
           expect(profile).to be_nil
+        end
+      end
+    end
+
+    shared_examples "sources_by_order" do
+      let(:order) { FactoryGirl.create :order, user: user, state: "complete", completed_at: DateTime.current }
+      let(:gateway) { new_gateway.tap(&:save!) }
+
+      let(:other_payment_method) { FactoryGirl.create(:payment_method) }
+
+      let(:source_without_profile) do
+        SolidusPaypalBraintree::Source.create!(payment_method_id: gateway.id, user_id: user.id)
+      end
+      let(:source_with_profile) do
+        SolidusPaypalBraintree::Source.create!(payment_method_id: gateway.id, user_id: user.id).tap do |source|
+          source.create_customer!(user: user)
+          source.save!
+        end
+      end
+
+      let!(:source_payment) { FactoryGirl.create(:payment, order: order, payment_method_id: payment_method_id, source: source) }
+
+      context "when the order has payments with the braintree payment method" do
+        let(:payment_method_id) { gateway.id }
+
+        context "when the payment has a saved source with a profile" do
+          let(:source) { source_with_profile }
+
+          it "returns the source" do
+            expect(subject.to_a).to eql([source])
+          end
+        end
+
+        context "when the payment has a saved source without a profile" do
+          let(:source) { source_without_profile }
+
+          it "returns no result" do
+            expect(subject.to_a).to eql([])
+          end
+        end
+      end
+
+      context "when the order has no payments with the braintree payment method" do
+        let(:payment_method_id) { other_payment_method.id }
+        let(:source) { FactoryGirl.create :credit_card }
+
+        it "returns no results" do
+          expect(subject.to_a).to eql([])
+        end
+      end
+    end
+
+    describe "#sources_by_order" do
+      let(:gateway) { new_gateway.tap(&:save!) }
+      let(:order) { FactoryGirl.create :order, user: user, state: "complete", completed_at: DateTime.current }
+
+      subject { gateway.sources_by_order(order) }
+
+      include_examples "sources_by_order"
+    end
+
+    describe "#reusable_sources" do
+      let(:order) { FactoryGirl.build :order, user: user }
+      let(:gateway) { new_gateway.tap(&:save!) }
+
+      subject { gateway.reusable_sources(order) }
+
+      context "when an order is completed" do
+        include_examples "sources_by_order"
+      end
+
+      context "when an order is not completed" do
+        context "when the order has a user id" do
+          let(:user) { FactoryGirl.create(:user) }
+
+          let!(:source_without_profile) do
+            SolidusPaypalBraintree::Source.create!(payment_method_id: gateway.id, user_id: user.id)
+          end
+
+          let!(:source_with_profile) do
+            SolidusPaypalBraintree::Source.create!(payment_method_id: gateway.id, user_id: user.id).tap do |source|
+              source.create_customer!(user: user)
+              source.save!
+            end
+          end
+
+          it "includes saved sources with payment profiles" do
+            expect(subject).to include(source_with_profile)
+          end
+
+          it "excludes saved sources without payment profiles" do
+            expect(subject).to_not include(source_without_profile)
+          end
+        end
+
+        context "when the order does not have a user" do
+          let(:user) { nil }
+          it "returns no sources for guest users" do
+            expect(subject).to eql([])
+          end
         end
       end
     end

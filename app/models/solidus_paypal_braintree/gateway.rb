@@ -155,6 +155,8 @@ module SolidusPaypalBraintree
       return if source.token.present? || source.customer.present? || source.nonce.nil?
 
       result = braintree.customer.create(customer_profile_params(payment))
+      fail Spree::Core::GatewayError, result.message unless result.success?
+
       customer = result.customer
 
       source.create_customer!(braintree_customer_id: customer.id).tap do
@@ -259,11 +261,40 @@ module SolidusPaypalBraintree
         params[:payment_method_nonce] = source.nonce
       end
 
+      if source.paypal?
+        params[:shipping] = braintree_shipping_address(options)
+      end
+
+      if source.credit_card?
+        params[:billing] = braintree_billing_address(options)
+      end
+
       if source.customer.present?
         params[:customer_id] = source.customer.braintree_customer_id
       end
 
       params
+    end
+
+    def braintree_shipping_address(options)
+      braintree_address_attributes(options[:shipping_address])
+    end
+
+    def braintree_billing_address(options)
+      braintree_address_attributes(options[:billing_address])
+    end
+
+    def braintree_address_attributes(address)
+      first, last = address[:name].split(" ", 2)
+      {
+        first_name: first,
+        last_name: last,
+        street_address: [address[:address1], address[:address2]].compact.join(" "),
+        locality: address[:city],
+        postal_code: address[:zip],
+        region: address[:state],
+        country_code_alpha2: address[:country]
+      }
     end
 
     def merchant_account_for(_source, options)
