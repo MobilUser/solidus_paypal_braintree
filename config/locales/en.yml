@@ -1,12 +1,25 @@
 en:
+  activerecord:
+    models:
+      solidus_paypal_braintree/gateway: Braintree
   spree:
     admin:
       tab:
         braintree: Braintree
+    client_sdk_enabled: Client SDK enabled?
+    environment: Environment
+    merchant_currency_map: Merchant currency map
+    merchant_id: Merchant ID
+    paypal_payee_email_map: Paypal payee email map
+    private_key: Private key
+    public_key: Public key
+    token_generation_enabled: Token generation enabled?
   solidus_paypal_braintree:
+    braintree: Braintree
     nonce: Nonce
     token: Token
     payment_type:
+      label: Payment Type
       apple_pay_card: Apple Pay
       credit_card: Credit Card
       pay_pal_account: PayPal

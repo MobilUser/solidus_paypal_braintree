@@ -54,6 +54,8 @@ Capybara.register_driver :chrome do |app|
   Capybara::Selenium::Driver.new(app, browser: :chrome)
 end
 
+require 'capybara-screenshot/rspec'
+
 VCR.configure do |c|
   c.cassette_library_dir = "spec/fixtures/cassettes"
   c.hook_into :webmock
@@ -88,6 +90,11 @@ module BraintreeHelpers
 
   def create_gateway(opts = {})
     new_gateway(opts).tap(&:save!)
+  end
+
+  # Using order.update! was deprecated in Solidus v2.3
+  def recalculate(order)
+    order.respond_to?(:recalculate) ? order.recalculate : order.update!
   end
 end
 
